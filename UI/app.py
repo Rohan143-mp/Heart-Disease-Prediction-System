@@ -34,6 +34,7 @@ from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
@@ -69,6 +70,7 @@ warnings.filterwarnings("ignore", message=".*InconsistentVersionWarning.*")
 # ---------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.path.join(BASE_DIR, "models", "final_model.pkl")
+DL_MODEL_PATH = os.path.join(BASE_DIR, "models", "deep_learning_model.pkl")
 SCALER_PATH = os.path.join(BASE_DIR, "models", "scaler.pkl")
 CLEANED_X_PATH = os.path.join(BASE_DIR, "data", "cleaned_X.csv")
 CLEANED_Y_PATH = os.path.join(BASE_DIR, "data", "clean_y.csv")
@@ -152,8 +154,11 @@ CATEGORICAL_FEATURES = {
         "label": "Thalassemia",
         "options": {
             "3": "Normal",
+            "3.0": "Normal",
             "6": "Fixed defect",
+            "6.0": "Fixed defect",
             "7": "Reversible defect",
+            "7.0": "Reversible defect",
         },
         "help": "Thalassemia blood disorder status",
     },
@@ -363,11 +368,21 @@ def evaluate_models() -> Dict[str, dict]:
         "Decision Tree": DecisionTreeClassifier(random_state=42),
         "Random Forest": RandomForestClassifier(random_state=42, n_estimators=100),
         "SVM (RBF Kernel)": SVC(kernel="rbf", random_state=42, probability=True),
+        "Deep Neural Network (MLP)": MLPClassifier(
+            hidden_layer_sizes=(64, 32, 16),
+            activation="relu",
+            solver="adam",
+            alpha=0.01,
+            random_state=42,
+            max_iter=1000,
+            early_stopping=True,
+            validation_fraction=0.15,
+        ),
     }
 
     results = {}
     for name, model in models.items():
-        if name in ("Logistic Regression", "SVM (RBF Kernel)"):
+        if name in ("Logistic Regression", "SVM (RBF Kernel)", "Deep Neural Network (MLP)"):
             model.fit(X_train_scaled, y_train)
             y_pred = model.predict(X_test_scaled)
         else:
@@ -433,6 +448,7 @@ def generate_pdf_report(
     prediction: int,
     probability: Optional[float],
     user_inputs: dict,
+    model_name: str = "SVM (RBF Kernel, 90.0% Acc)",
 ) -> bytes:
     """Generate a clean, clinical PDF summary report using ReportLab."""
     buffer = io.BytesIO()
@@ -541,7 +557,7 @@ def generate_pdf_report(
         ["Max Heart Rate Achieved", f"{user_inputs.get('thalach', '-')} bpm", "Resting ECG", restecg_label],
         ["ST Depression (oldpeak)", f"{user_inputs.get('oldpeak', '-')} mm", "Exercise Angina", exang_label],
         ["Major Vessels (fluoroscopy)", str(user_inputs.get('ca', '-')), "ST Segment Slope", slope_label],
-        ["Thalassemia Status", thal_label, "Model Champion", "SVM (RBF Kernel, 90.0% Acc)"],
+        ["Thalassemia Status", thal_label, "Active Classifier", model_name],
     ]
 
     t = Table(data, colWidths=[3.2 * cm, 4.8 * cm, 3.8 * cm, 5.2 * cm])
@@ -1162,25 +1178,38 @@ def render_prediction():
         st.error("Feature schema not found at `data/cleaned_X.csv`.")
         return
 
-    model = load_model(MODEL_PATH)
     scaler = load_scaler(SCALER_PATH)
     feature_columns = load_feature_columns(CLEANED_X_PATH)
     groups = split_feature_groups(feature_columns)
 
-    pred_mode = st.radio(
-        "Assessment Mode",
-        ["Single Patient Assessment", "CSV Batch Processing"],
-        horizontal=True,
-        label_visibility="collapsed",
-    )
+    col_mode, col_arch = st.columns([1.1, 1.4])
+    with col_mode:
+        pred_mode = st.radio(
+            "Assessment Mode",
+            ["Single Patient Assessment", "CSV Batch Processing"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+    with col_arch:
+        arch_options = ["Support Vector Machine (RBF — 90.0% Acc)"]
+        if os.path.exists(DL_MODEL_PATH):
+            arch_options.append("Deep Neural Network (MLP — 86.7% Acc, 0.948 AUC)")
+        selected_arch = st.selectbox(
+            "Classifier Architecture",
+            arch_options,
+            help="Select which trained classifier to use for risk inference",
+        )
+
+    active_model_path = DL_MODEL_PATH if "Deep Neural Network" in selected_arch else MODEL_PATH
+    model = load_model(active_model_path)
 
     if pred_mode == "Single Patient Assessment":
-        _render_single_prediction_form(model, scaler, feature_columns, groups)
+        _render_single_prediction_form(model, scaler, feature_columns, groups, selected_arch)
     else:
-        _render_batch_prediction_form(model, scaler, feature_columns)
+        _render_batch_prediction_form(model, scaler, feature_columns, selected_arch)
 
 
-def _render_single_prediction_form(model, scaler, feature_columns, groups):
+def _render_single_prediction_form(model, scaler, feature_columns, groups, model_name='SVM (RBF Kernel)'):
     """Render single patient form."""
     if "prediction_result" not in st.session_state:
         st.session_state.prediction_result = None
@@ -1312,7 +1341,7 @@ def _render_single_prediction_form(model, scaler, feature_columns, groups):
 
         # PDF Download Button
         try:
-            pdf_data = generate_pdf_report(p, prob, inputs)
+            pdf_data = generate_pdf_report(p, prob, inputs, model_name=model_name)
             st.download_button(
                 label="Download Clinical Summary Report (PDF)",
                 data=pdf_data,
@@ -1327,7 +1356,7 @@ def _render_single_prediction_form(model, scaler, feature_columns, groups):
             st.dataframe(res["features_df"].T.rename(columns={0: "Encoded Value"}), use_container_width=True)
 
 
-def _render_batch_prediction_form(model, scaler, feature_columns):
+def _render_batch_prediction_form(model, scaler, feature_columns, model_name='SVM (RBF Kernel)'):
     """Render batch CSV upload."""
     st.markdown("#### Batch CSV Processing")
     st.markdown(

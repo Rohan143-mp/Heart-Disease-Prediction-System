@@ -15,6 +15,9 @@ model = joblib.load("models/final_model.pkl")
 scaler = joblib.load("models/scaler.pkl")
 print("[OK] Model loaded:", type(model).__name__)
 print("[OK] Scaler loaded:", type(scaler).__name__)
+if os.path.exists("models/deep_learning_model.pkl"):
+    dl_model = joblib.load("models/deep_learning_model.pkl")
+    print("[OK] Deep Learning model loaded:", type(dl_model).__name__)
 
 # 2. Load features
 X = pd.read_csv("data/cleaned_X.csv")
@@ -124,11 +127,14 @@ sc = StandardScaler()
 Xtr = sc.fit_transform(X_train)
 Xte = sc.transform(X_test)
 
+from sklearn.neural_network import MLPClassifier
+
 for name, clf in [
     ("Logistic Regression", LogisticRegression(random_state=42, max_iter=1000)),
     ("Decision Tree", DecisionTreeClassifier(random_state=42)),
     ("Random Forest", RandomForestClassifier(random_state=42, n_estimators=100)),
     ("SVM (RBF)", SVC(kernel="rbf", random_state=42, probability=True)),
+    ("Deep Neural Network (MLP)", MLPClassifier(hidden_layer_sizes=(64, 32, 16), activation="relu", solver="adam", alpha=0.01, random_state=42, max_iter=1000, early_stopping=True)),
 ]:
     clf.fit(Xtr, y_train)
     p = clf.predict(Xte)
